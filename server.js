@@ -303,8 +303,8 @@ wss.on("connection", async (exoWs, req) => {
 
             const pcm = Buffer.concat(pcmChunks);
             const wavPath = fileForCall(callSid, "wav");
-            writeWavFile(wavPath, pcm, { sampleRate: 8000, channels: 1, bitsPerSample: 16 });
-            console.log("✅ WAV SAVED:", wavPath, "size:", pcm.length);
+            // writeWavFile(wavPath, pcm, { sampleRate: 8000, channels: 1, bitsPerSample: 16 });
+            // console.log("✅ WAV SAVED:", wavPath, "size:", pcm.length);
 
             pcmChunks = [];
             return;
