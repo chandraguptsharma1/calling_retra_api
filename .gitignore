@@ -1,0 +1,55 @@
+# ------ Node (server + client) ------
+**/node_modules/
+
+# Builds / caches
+dist/
+build/
+out/
+.next/
+.vercel/
+.cache/
+.parcel-cache/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Logs & PIDs
+logs/
+**/*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Local env/config
+.env
+.env.*
+!.env.example
+
+# Uploads & generated media (keep folder via .gitkeep)
+uploads/*
+!uploads/.gitkeep
+Server/uploads/*
+!Server/uploads/.gitkeep
+audio/*
+Server/audio/*
+# common media
+**/*.wav
+**/*.mp3
+**/*.ogg
+
+# App data / debug dumps
+data/
+Server/data/
+debug/
+Server/debug/
+
+# IDE / OS noise
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
