@@ -13,11 +13,13 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "cors": "^2.8.5",
     "axios": "^1.13.5",
+    "cors": "^2.8.5",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "morgan": "^1.10.1",
+    "multer": "^2.0.2",
+    "mysql2": "^3.17.4",
     "nodemon": "^3.1.11",
     "ws": "^8.19.0"
   }

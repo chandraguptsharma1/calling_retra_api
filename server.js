@@ -8,6 +8,9 @@ import { WebSocketServer } from "ws";
 import WebSocket from "ws"; // for Eleven WS
 import cors from "cors";
 
+import multer from "multer";
+const upload = multer();
+
 dotenv.config();
 
 const app = express();
@@ -16,6 +19,11 @@ app.use(express.json());
 app.use(morgan("dev"));
 
 const PORT = process.env.PORT || 8091;
+
+const batches = new Map();  // batchId -> { sseClients:Set(res) }
+const callCtx = new Map();  // callSid -> { batchId, index, customerName, dueAmount, mobile }
+
+app.use(express.urlencoded({ extended: true }));
 
 /* =========================
    STORAGE
@@ -184,6 +192,24 @@ async function connectEleven(agentId) {
                         // prompt: "Speak in natural, clear Hindi. Pronounce words correctly. Avoid mixing English unless the user speaks English."
                     }
                 },
+
+                // conversation_initiation_client_data: {
+                //     conversation_config_override: {
+                //         conversation: {
+                //             text_only: false,
+                //             agent_output_audio_format: "pcm_16000",
+                //             user_input_audio_format: "pcm_16000",
+                //             model_id: "eleven_multilingual_v2",
+                //             agent: { language: "hi", voice: { voice_id: "6pVydnYcVtMsrrSeUKs6" } }
+                //         }
+                //     }
+                // },
+                // dynamic_variables: {
+                //     agent_name: agentName,
+                //     customer_name: customerName,
+                //     due_amount: dueAmount,
+                //     due_date: dueDate
+                // }
             })
         );
     });
@@ -369,6 +395,15 @@ app.post("/api/test-call", async (req, res) => {
             return res.status(400).json({ ok: false, error: "Send 'from' or 'to' number." });
         }
 
+        // ✅ Your public base (ngrok / render)
+        const BASE = process.env.PUBLIC_BASE_URL;
+        // e.g. https://4fe8-2409-40e3-3116-1f58-54ed-eac7-72fe-b63f.ngrok-free.app
+
+        if (!BASE) throw new Error("PUBLIC_BASE_URL missing in env");
+
+        // ✅ callback endpoint (applet/stream unchanged)
+        const statusCb = `${BASE}/exotel/status`;
+
         const finalFrom = from || to;
         const url = `https://${SUB}/v1/Accounts/${EXOTEL_SID}/Calls/connect.json`;
         const exomlAppUrl = `http://my.exotel.com/${EXOTEL_SID}/exoml/start_voice/${EXOTEL_APP_ID}`;
@@ -378,6 +413,15 @@ app.post("/api/test-call", async (req, res) => {
             CallerId: CALLER_ID,
             Url: exomlAppUrl,
             CallType: "trans",
+            // ✅ IMPORTANT
+            StatusCallback: statusCb,
+
+            // // ✅ Always get callback even if not answered / busy / failed / cut
+            // "StatusCallbackEvents[0]": "terminal",
+            // "StatusCallbackEvents[1]": "answered",
+
+            // // ✅ easier parsing
+            // StatusCallbackContentType: "application/json",
         });
 
         console.log("EXOTEL URL:", url);
@@ -404,4 +448,267 @@ app.post("/api/test-call", async (req, res) => {
     }
 });
 
+app.get("/api/call/events", (req, res) => {
+    const batchId = String(req.query.batchId || "");
+    if (!batchId) return res.status(400).end("batchId required");
+
+    if (!batches.has(batchId)) batches.set(batchId, { sseClients: new Set() });
+    const batch = batches.get(batchId);
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no"); // helps on some proxies
+    res.flushHeaders?.();
+
+    batch.sseClients.add(res);
+
+    // ✅ initial
+    res.write(`data: ${JSON.stringify({ type: "CONNECTED", batchId })}\n\n`);
+
+    // ✅ keep-alive ping every 15s (prevents ngrok/proxy timeout)
+    const ping = setInterval(() => {
+        try {
+            res.write(`: ping ${Date.now()}\n\n`); // comment line for SSE
+        } catch { }
+    }, 15000);
+
+    req.on("close", () => {
+        clearInterval(ping);
+        batch.sseClients.delete(res);
+    });
+});
+
+function pushToBatch(batchId, payload) {
+    const batch = batches.get(batchId);
+    if (!batch) return;
+    for (const client of batch.sseClients) {
+        client.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+}
+
+app.post("/api/call/trigger", async (req, res) => {
+    try {
+        const { batchId, index, mobile, customerName, dueAmount } = req.body;
+        if (!batchId || index === undefined || !mobile) {
+            return res.status(400).json({ ok: false, error: "batchId, index, mobile required" });
+        }
+
+        // ✅ trigger Exotel call (your existing logic)
+        const callSid = await triggerExotelOnly(mobile); // implement using your /api/test-call logic
+
+        // ✅ save mapping
+        callCtx.set(callSid, { batchId, index, mobile, customerName, dueAmount });
+
+        // optional: push initial
+        pushToBatch(batchId, { type: "CALL_TRIGGERED", index, callSid, mobile });
+
+        return res.json({ ok: true, callSid });
+    } catch (e) {
+        return res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
+
+app.post("/exotel/status", upload.none(), async (req, res) => {
+    try {
+        const p = req.body || {};
+
+        const callSid =
+            p.CallSid ||
+            p.call_sid ||
+            p.callSid;
+
+        const status = String(p.Status || p.CallStatus || "").toLowerCase();
+
+        console.log("✅ EXOTEL CALLBACK:", { callSid, status });
+
+        const ctx = callSid ? callCtx.get(callSid) : null;
+
+        if (!ctx) {
+            console.log("⚠️ No ctx found for:", callSid);
+            return res.status(200).send("ok");
+        }
+
+        /* ========================
+           1️⃣ Map Status
+        ======================== */
+
+        let aiStatus = "CALL_TRIGGERED";
+        let talkStatus = "CALLING";
+        let latestStatus = status;
+
+        if (status === "busy") {
+            aiStatus = "FAILED";
+            talkStatus = "BUSY";
+            latestStatus = "Customer Busy";
+        }
+
+        if (status === "no-answer") {
+            aiStatus = "FAILED";
+            talkStatus = "NO_ANSWER";
+            latestStatus = "No Answer";
+        }
+
+        if (status === "completed") {
+            aiStatus = "SUCCESS";
+            talkStatus = "COMPLETED";
+            latestStatus = "Call Completed";
+        }
+
+        if (status === "failed") {
+            aiStatus = "FAILED";
+            talkStatus = "FAILED";
+            latestStatus = "Call Failed";
+        }
+
+        /* ========================
+           2️⃣ Push LIVE STATUS
+        ======================== */
+
+        pushToBatch(ctx.batchId, {
+            type: "CALL_STATUS",
+            index: ctx.index,
+            callSid,
+            status,
+            aiStatus,
+            talkStatus,
+            latestStatus
+        });
+
+        /* ========================
+           3️⃣ Update DB
+        ======================== */
+
+        // console.log("✅ AI status updated in DB");
+
+        // await axios.post("http://localhost:3000/updateAiStatus", {
+        //     id: ctx.rowId || ctx.index,  // better use real DB id
+        //     ai_status: aiStatus,
+        //     talk_status: talkStatus,
+        //     latest_status: latestStatus,
+        //     last_call_sid: callSid
+        // });
+
+        console.log("✅ AI status updated in DB");
+
+        /* ========================
+           4️⃣ ONLY ON FINAL → PUSH CALL_FINAL
+        ======================== */
+
+        const finalStates = ["completed", "busy", "failed", "no-answer", "canceled"];
+
+        if (finalStates.includes(status)) {
+
+            pushToBatch(ctx.batchId, {
+                type: "CALL_FINAL",
+                index: ctx.index,
+                callSid,
+                status
+            });
+
+            callCtx.delete(callSid);
+        }
+
+        res.status(200).send("ok");
+
+    } catch (err) {
+        console.log("❌ CALLBACK ERROR:", err.message);
+        res.status(200).send("ok");
+    }
+});
+
+
+// app.post("/exotel/status", upload.none(), (req, res) => {
+//     const p = req.body || {};
+
+//     const callSid =
+//         p.CallSid || p.call_sid || p.callSid || p.DialCallSid || p.ParentCallSid;
+
+//     const status = String(p.CallStatus || p.Status || "").toLowerCase();
+//     const eventType = (p.EventType || "").toLowerCase();
+
+//     console.log("✅ EXOTEL CALLBACK", { eventType, callSid, status, body: p });
+
+//     const ctx = callSid ? callCtx.get(callSid) : null;
+
+//     if (ctx) {
+//         pushToBatch(ctx.batchId, {
+//             type: "CALL_STATUS",
+//             index: ctx.index,
+//             callSid,
+//             status,
+//             eventType,
+//             mobile: ctx.mobile,
+//             recordingUrl: p.RecordingUrl || null,
+//             conversationDuration: p.ConversationDuration || null
+//         });
+
+//         const final = ["completed", "no-answer", "busy", "failed", "canceled"].includes(status);
+//         if (final) {
+//             pushToBatch(ctx.batchId, { type: "CALL_FINAL", index: ctx.index, callSid, status });
+//             // callCtx.delete(callSid); // optional cleanup
+//         }
+//     } else {
+//         console.log("⚠️ callback but ctx not found", { callSid, status, eventType });
+//     }
+
+//     res.status(200).json({ ok: true });
+// });
+
+
+async function triggerExotelOnly(mobile) {
+    const EXOTEL_SID = process.env.EXOTEL_SID;
+    const KEY = process.env.EXOTEL_API_KEY;
+    const TOKEN = process.env.EXOTEL_API_TOKEN;
+    const SUB = process.env.EXOTEL_SUBDOMAIN; // api.in.exotel.com
+    const CALLER_ID = process.env.EXOTEL_CALLER_ID;
+    const EXOTEL_APP_ID = process.env.EXOTEL_APP_ID;
+
+    // ✅ Your public base (ngrok / render)
+    const BASE = process.env.PUBLIC_BASE_URL;
+    // e.g. https://4fe8-2409-40e3-3116-1f58-54ed-eac7-72fe-b63f.ngrok-free.app
+
+    if (!BASE) throw new Error("PUBLIC_BASE_URL missing in env");
+
+    const url = `https://${SUB}/v1/Accounts/${EXOTEL_SID}/Calls/connect.json`;
+    const exomlAppUrl = `http://my.exotel.com/${EXOTEL_SID}/exoml/start_voice/${EXOTEL_APP_ID}`;
+
+    // ✅ callback endpoint (applet/stream unchanged)
+    const statusCb = `${BASE}/exotel/status`;
+
+    const body = new URLSearchParams({
+        From: mobile,
+        CallerId: CALLER_ID,
+        Url: exomlAppUrl,
+        CallType: "trans",
+
+        // ✅ IMPORTANT
+        StatusCallback: statusCb,
+    });
+
+    const auth = Buffer.from(`${KEY}:${TOKEN}`).toString("base64");
+
+    const exotelResp = await axios.post(url, body, {
+        headers: {
+            Authorization: `Basic ${auth}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        timeout: 20000,
+    });
+
+    // ✅ Extract CallSid from response (shape can vary)
+    const callSid =
+        exotelResp?.data?.Call?.Sid ||
+        exotelResp?.data?.CallSid ||
+        exotelResp?.data?.Sid ||
+        exotelResp?.data?.response?.Call?.Sid;
+
+    if (!callSid) {
+        console.log("⚠️ Exotel response:", JSON.stringify(exotelResp.data));
+        throw new Error("CallSid not found in Exotel response");
+    }
+
+    return callSid;
+}
 app.get("/health", (_, res) => res.send("ok"));
