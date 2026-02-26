@@ -497,8 +497,11 @@ app.post("/api/call/trigger", async (req, res) => {
         // ✅ trigger Exotel call (your existing logic)
         const callSid = await triggerExotelOnly(mobile); // implement using your /api/test-call logic
 
-        // ✅ save mapping
-        callCtx.set(callSid, { batchId, index, mobile, customerName, dueAmount });
+        // ✅ rowId store
+        callCtx.set(callSid, { batchId, index, rowId, mobile, customerName, dueAmount });
+
+        console.log("✅ SAVED CTX:", callSid, callCtx.get(callSid)); // debug
+
 
         // optional: push initial
         pushToBatch(batchId, { type: "CALL_TRIGGERED", index, callSid, mobile });
@@ -582,14 +585,21 @@ app.post("/exotel/status", upload.none(), async (req, res) => {
 
         console.log("✅ AI status updated in DB start");
 
-        // ✅ 2) DB update (yahi chahiye tumhe)
-        await updateAiStatusInDb({
-            id: ctx.rowId,               // ✅ REAL DB ID
+        const payload = {
             ai_status: aiStatus,
             talk_status: talkStatus,
             latest_status: latestStatus,
             last_call_sid: callSid
-        });
+        };
+
+        if (ctx.rowId) {
+            payload.id = ctx.rowId;
+        } else {
+            payload.mobile_number = ctx.mobile;
+            payload.due_date = ctx.dueDate; // (agar store karoge tab)
+        }
+
+        await updateAiStatusInDb(payload);
 
         console.log("✅ AI status updated in DB finish");
 
