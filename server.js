@@ -512,122 +512,186 @@ app.post("/api/call/trigger", async (req, res) => {
     }
 });
 
-
 app.post("/exotel/status", upload.none(), async (req, res) => {
     try {
         const p = req.body || {};
 
         const callSid =
-            p.CallSid ||
-            p.call_sid ||
-            p.callSid;
+            p.CallSid || p.call_sid || p.callSid || p.DialCallSid || p.ParentCallSid;
 
         const status = String(p.Status || p.CallStatus || "").toLowerCase();
 
-        console.log("✅ EXOTEL CALLBACK:", { callSid, status });
+        // ✅ get ctx from query (most reliable)
+        const batchId = String(req.query.batchId || "");
+        const index = Number(req.query.index);
+        const rowId = String(req.query.rowId || "");
 
-        const ctx = callSid ? callCtx.get(callSid) : null;
+        console.log("✅ EXOTEL CALLBACK:", { callSid, status, batchId, index, rowId });
+
+        // If query missing, fallback to callCtx
+        let ctx = (batchId && !Number.isNaN(index)) ? { batchId, index, rowId } : (callSid ? callCtx.get(callSid) : null);
 
         if (!ctx) {
             console.log("⚠️ No ctx found for:", callSid);
             return res.status(200).send("ok");
         }
 
-        /* ========================
-           1️⃣ Map Status
-        ======================== */
-
+        // map statuses
         let aiStatus = "CALL_TRIGGERED";
         let talkStatus = "CALLING";
         let latestStatus = status;
 
-        if (status === "busy") {
-            aiStatus = "FAILED";
-            talkStatus = "BUSY";
-            latestStatus = "Customer Busy";
-        }
+        if (status === "busy") { aiStatus = "FAILED"; talkStatus = "BUSY"; latestStatus = "Customer Busy"; }
+        else if (status === "no-answer") { aiStatus = "FAILED"; talkStatus = "NO_ANSWER"; latestStatus = "No Answer"; }
+        else if (status === "completed") { aiStatus = "SUCCESS"; talkStatus = "COMPLETED"; latestStatus = "Call Completed"; }
+        else if (status === "failed") { aiStatus = "FAILED"; talkStatus = "FAILED"; latestStatus = "Call Failed"; }
 
-        if (status === "no-answer") {
-            aiStatus = "FAILED";
-            talkStatus = "NO_ANSWER";
-            latestStatus = "No Answer";
-        }
+        // ✅ SSE push
+        pushToBatch(ctx.batchId, { type: "CALL_STATUS", index: ctx.index, callSid, status, aiStatus, talkStatus, latestStatus });
 
-        if (status === "completed") {
-            aiStatus = "SUCCESS";
-            talkStatus = "COMPLETED";
-            latestStatus = "Call Completed";
-        }
-
-        if (status === "failed") {
-            aiStatus = "FAILED";
-            talkStatus = "FAILED";
-            latestStatus = "Call Failed";
-        }
-
-        /* ========================
-           2️⃣ Push LIVE STATUS
-        ======================== */
-
-        pushToBatch(ctx.batchId, {
-            type: "CALL_STATUS",
-            index: ctx.index,
-            callSid,
-            status,
-            aiStatus,
-            talkStatus,
-            latestStatus
-        });
-
-        /* ========================
-           3️⃣ Update DB
-        ======================== */
-
-        console.log("✅ AI status updated in DB start");
-
-        // const payload = {
-        //     ai_status: aiStatus,
-        //     talk_status: talkStatus,
-        //     latest_status: latestStatus,
-        //     last_call_sid: callSid
-        // };
-
-        // if (ctx.rowId) {
-        //     payload.id = ctx.rowId;
-        // } else {
-        //     payload.mobile_number = ctx.mobile;
-        //     payload.due_date = ctx.dueDate; // (agar store karoge tab)
-        // }
-
-        // await updateAiStatusInDb(payload);
-
-        console.log("✅ AI status updated in DB finish");
-
-        /* ========================
-           4️⃣ ONLY ON FINAL → PUSH CALL_FINAL
-        ======================== */
-
-        const finalStates = ["completed", "busy", "failed", "no-answer", "canceled"];
-
-        if (finalStates.includes(status)) {
-
-            pushToBatch(ctx.batchId, {
-                type: "CALL_FINAL",
-                index: ctx.index,
-                callSid,
-                status
+        // ✅ DB update (id must be present)
+        if (ctx.rowId) {
+            await updateAiStatusInDb({
+                id: Number(ctx.rowId),
+                ai_status: aiStatus,
+                talk_status: talkStatus,
+                latest_status: latestStatus,
+                last_call_sid: callSid
             });
-
-            callCtx.delete(callSid);
+        } else {
+            console.log("⚠️ rowId missing, DB update skipped");
         }
 
-        res.status(200).send("ok");
+        // final push
+        const finalStates = ["completed", "busy", "failed", "no-answer", "canceled"];
+        if (finalStates.includes(status)) {
+            pushToBatch(ctx.batchId, { type: "CALL_FINAL", index: ctx.index, callSid, status });
+            if (callSid) callCtx.delete(callSid);
+        }
 
+        return res.status(200).send("ok");
     } catch (err) {
-        console.log("❌ CALLBACK ERROR:", err.message);
-        res.status(200).send("ok");
+        console.log("❌ CALLBACK ERROR:", err?.message);
+        return res.status(200).send("ok");
     }
 });
+
+
+// app.post("/exotel/status", upload.none(), async (req, res) => {
+//     try {
+//         const p = req.body || {};
+
+//         const callSid =
+//             p.CallSid ||
+//             p.call_sid ||
+//             p.callSid;
+
+//         const status = String(p.Status || p.CallStatus || "").toLowerCase();
+
+//         console.log("✅ EXOTEL CALLBACK:", { callSid, status });
+
+//         const ctx = callSid ? callCtx.get(callSid) : null;
+
+//         if (!ctx) {
+//             console.log("⚠️ No ctx found for:", callSid);
+//             return res.status(200).send("ok");
+//         }
+
+//         /* ========================
+//            1️⃣ Map Status
+//         ======================== */
+
+//         let aiStatus = "CALL_TRIGGERED";
+//         let talkStatus = "CALLING";
+//         let latestStatus = status;
+
+//         if (status === "busy") {
+//             aiStatus = "FAILED";
+//             talkStatus = "BUSY";
+//             latestStatus = "Customer Busy";
+//         }
+
+//         if (status === "no-answer") {
+//             aiStatus = "FAILED";
+//             talkStatus = "NO_ANSWER";
+//             latestStatus = "No Answer";
+//         }
+
+//         if (status === "completed") {
+//             aiStatus = "SUCCESS";
+//             talkStatus = "COMPLETED";
+//             latestStatus = "Call Completed";
+//         }
+
+//         if (status === "failed") {
+//             aiStatus = "FAILED";
+//             talkStatus = "FAILED";
+//             latestStatus = "Call Failed";
+//         }
+
+//         /* ========================
+//            2️⃣ Push LIVE STATUS
+//         ======================== */
+
+//         pushToBatch(ctx.batchId, {
+//             type: "CALL_STATUS",
+//             index: ctx.index,
+//             callSid,
+//             status,
+//             aiStatus,
+//             talkStatus,
+//             latestStatus
+//         });
+
+//         /* ========================
+//            3️⃣ Update DB
+//         ======================== */
+
+//         console.log("✅ AI status updated in DB start");
+
+//         // const payload = {
+//         //     ai_status: aiStatus,
+//         //     talk_status: talkStatus,
+//         //     latest_status: latestStatus,
+//         //     last_call_sid: callSid
+//         // };
+
+//         // if (ctx.rowId) {
+//         //     payload.id = ctx.rowId;
+//         // } else {
+//         //     payload.mobile_number = ctx.mobile;
+//         //     payload.due_date = ctx.dueDate; // (agar store karoge tab)
+//         // }
+
+//         // await updateAiStatusInDb(payload);
+
+//         console.log("✅ AI status updated in DB finish");
+
+//         /* ========================
+//            4️⃣ ONLY ON FINAL → PUSH CALL_FINAL
+//         ======================== */
+
+//         const finalStates = ["completed", "busy", "failed", "no-answer", "canceled"];
+
+//         if (finalStates.includes(status)) {
+
+//             pushToBatch(ctx.batchId, {
+//                 type: "CALL_FINAL",
+//                 index: ctx.index,
+//                 callSid,
+//                 status
+//             });
+
+//             callCtx.delete(callSid);
+//         }
+
+//         res.status(200).send("ok");
+
+//     } catch (err) {
+//         console.log("❌ CALLBACK ERROR:", err.message);
+//         res.status(200).send("ok");
+//     }
+// });
 
 
 // app.post("/exotel/status", upload.none(), (req, res) => {
