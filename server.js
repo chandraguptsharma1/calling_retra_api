@@ -489,7 +489,9 @@ function pushToBatch(batchId, payload) {
 
 app.post("/api/call/trigger", async (req, res) => {
     try {
-        const { batchId, index, mobile, customerName, dueAmount } = req.body;
+        const { batchId, index, rowId, mobile, customerName, dueAmount } = req.body;
+
+        console.log("request body ==> ", req.body);
         if (!batchId || index === undefined || !mobile) {
             return res.status(400).json({ ok: false, error: "batchId, index, mobile required" });
         }
@@ -497,11 +499,8 @@ app.post("/api/call/trigger", async (req, res) => {
         // ✅ trigger Exotel call (your existing logic)
         const callSid = await triggerExotelOnly(mobile); // implement using your /api/test-call logic
 
-        // ✅ rowId store
-        callCtx.set(callSid, { batchId, index, rowId, mobile, customerName, dueAmount });
-
-        console.log("✅ SAVED CTX:", callSid, callCtx.get(callSid)); // debug
-
+        // ✅ save mapping
+        callCtx.set(callSid, { batchId, index, mobile, customerName, dueAmount });
 
         // optional: push initial
         pushToBatch(batchId, { type: "CALL_TRIGGERED", index, callSid, mobile });
@@ -511,70 +510,6 @@ app.post("/api/call/trigger", async (req, res) => {
         return res.status(500).json({ ok: false, error: e.message });
     }
 });
-
-// app.post("/exotel/status", upload.none(), async (req, res) => {
-//   try {
-//     const p = req.body || {};
-
-//     const callSid =
-//       p.CallSid || p.call_sid || p.callSid || p.DialCallSid || p.ParentCallSid;
-
-//     const status = String(p.Status || p.CallStatus || "").toLowerCase();
-
-//     // ✅ get ctx from query (most reliable)
-//     const batchId = String(req.query.batchId || "");
-//     const index = Number(req.query.index);
-//     const rowId = String(req.query.rowId || "");
-
-//     console.log("✅ EXOTEL CALLBACK:", { callSid, status, batchId, index, rowId });
-
-//     // If query missing, fallback to callCtx
-//     let ctx = (batchId && !Number.isNaN(index)) ? { batchId, index, rowId } : (callSid ? callCtx.get(callSid) : null);
-
-//     if (!ctx) {
-//       console.log("⚠️ No ctx found for:", callSid);
-//       return res.status(200).send("ok");
-//     }
-
-//     // map statuses
-//     let aiStatus = "CALL_TRIGGERED";
-//     let talkStatus = "CALLING";
-//     let latestStatus = status;
-
-//     if (status === "busy") { aiStatus="FAILED"; talkStatus="BUSY"; latestStatus="Customer Busy"; }
-//     else if (status === "no-answer") { aiStatus="FAILED"; talkStatus="NO_ANSWER"; latestStatus="No Answer"; }
-//     else if (status === "completed") { aiStatus="SUCCESS"; talkStatus="COMPLETED"; latestStatus="Call Completed"; }
-//     else if (status === "failed") { aiStatus="FAILED"; talkStatus="FAILED"; latestStatus="Call Failed"; }
-
-//     // ✅ SSE push
-//     pushToBatch(ctx.batchId, { type:"CALL_STATUS", index: ctx.index, callSid, status, aiStatus, talkStatus, latestStatus });
-
-//     // ✅ DB update (id must be present)
-//     if (ctx.rowId) {
-//       await updateAiStatusInDb({
-//         id: Number(ctx.rowId),
-//         ai_status: aiStatus,
-//         talk_status: talkStatus,
-//         latest_status: latestStatus,
-//         last_call_sid: callSid
-//       });
-//     } else {
-//       console.log("⚠️ rowId missing, DB update skipped");
-//     }
-
-//     // final push
-//     const finalStates = ["completed","busy","failed","no-answer","canceled"];
-//     if (finalStates.includes(status)) {
-//       pushToBatch(ctx.batchId, { type:"CALL_FINAL", index: ctx.index, callSid, status });
-//       if (callSid) callCtx.delete(callSid);
-//     }
-
-//     return res.status(200).send("ok");
-//   } catch (err) {
-//     console.log("❌ CALLBACK ERROR:", err?.message);
-//     return res.status(200).send("ok");
-//   }
-// });
 
 
 app.post("/exotel/status", upload.none(), async (req, res) => {
@@ -649,21 +584,14 @@ app.post("/exotel/status", upload.none(), async (req, res) => {
 
         console.log("✅ AI status updated in DB start");
 
-        // const payload = {
+        // // ✅ 2) DB update (yahi chahiye tumhe)
+        // await updateAiStatusInDb({
+        //     id: ctx.rowId,               // ✅ REAL DB ID
         //     ai_status: aiStatus,
         //     talk_status: talkStatus,
         //     latest_status: latestStatus,
         //     last_call_sid: callSid
-        // };
-
-        // if (ctx.rowId) {
-        //     payload.id = ctx.rowId;
-        // } else {
-        //     payload.mobile_number = ctx.mobile;
-        //     payload.due_date = ctx.dueDate; // (agar store karoge tab)
-        // }
-
-        // await updateAiStatusInDb(payload);
+        // });
 
         console.log("✅ AI status updated in DB finish");
 
@@ -769,6 +697,7 @@ async function triggerExotelOnly(mobile) {
         CallerId: CALLER_ID,
         Url: exomlAppUrl,
         CallType: "trans",
+
         // ✅ IMPORTANT
         StatusCallback: statusCb,
     });
