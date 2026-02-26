@@ -585,21 +585,21 @@ app.post("/exotel/status", upload.none(), async (req, res) => {
 
         console.log("✅ AI status updated in DB start");
 
-        const payload = {
-            ai_status: aiStatus,
-            talk_status: talkStatus,
-            latest_status: latestStatus,
-            last_call_sid: callSid
-        };
+        // const payload = {
+        //     ai_status: aiStatus,
+        //     talk_status: talkStatus,
+        //     latest_status: latestStatus,
+        //     last_call_sid: callSid
+        // };
 
-        if (ctx.rowId) {
-            payload.id = ctx.rowId;
-        } else {
-            payload.mobile_number = ctx.mobile;
-            payload.due_date = ctx.dueDate; // (agar store karoge tab)
-        }
+        // if (ctx.rowId) {
+        //     payload.id = ctx.rowId;
+        // } else {
+        //     payload.mobile_number = ctx.mobile;
+        //     payload.due_date = ctx.dueDate; // (agar store karoge tab)
+        // }
 
-        await updateAiStatusInDb(payload);
+        // await updateAiStatusInDb(payload);
 
         console.log("✅ AI status updated in DB finish");
 
