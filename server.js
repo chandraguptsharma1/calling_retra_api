@@ -580,17 +580,18 @@ app.post("/exotel/status", upload.none(), async (req, res) => {
            3️⃣ Update DB
         ======================== */
 
-        // console.log("✅ AI status updated in DB");
+        console.log("✅ AI status updated in DB start");
 
-        // await axios.post("http://localhost:3000/updateAiStatus", {
-        //     id: ctx.rowId || ctx.index,  // better use real DB id
-        //     ai_status: aiStatus,
-        //     talk_status: talkStatus,
-        //     latest_status: latestStatus,
-        //     last_call_sid: callSid
-        // });
+        // ✅ 2) DB update (yahi chahiye tumhe)
+        await updateAiStatusInDb({
+            id: ctx.rowId,               // ✅ REAL DB ID
+            ai_status: aiStatus,
+            talk_status: talkStatus,
+            latest_status: latestStatus,
+            last_call_sid: callSid
+        });
 
-        console.log("✅ AI status updated in DB");
+        console.log("✅ AI status updated in DB finish");
 
         /* ========================
            4️⃣ ONLY ON FINAL → PUSH CALL_FINAL
@@ -656,6 +657,18 @@ app.post("/exotel/status", upload.none(), async (req, res) => {
 //     res.status(200).json({ ok: true });
 // });
 
+async function updateAiStatusInDb(payload) {
+    const url = process.env.UPDATE_AI_STATUS_URL || "https://surecollect.ai:3000/updateAiStatus";
+    try {
+        const resp = await axios.post(url, payload, { timeout: 10000 });
+        console.log("✅ updateAiStatus response:", resp.data);
+        return true;
+    } catch (e) {
+        console.log("❌ updateAiStatus failed:", e?.response?.data || e.message);
+        return false;
+    }
+}
+
 
 async function triggerExotelOnly(mobile) {
     const EXOTEL_SID = process.env.EXOTEL_SID;
@@ -682,7 +695,6 @@ async function triggerExotelOnly(mobile) {
         CallerId: CALLER_ID,
         Url: exomlAppUrl,
         CallType: "trans",
-
         // ✅ IMPORTANT
         StatusCallback: statusCb,
     });
