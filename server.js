@@ -177,7 +177,7 @@ async function getElevenSignedUrl(agentId) {
     return resp.data.signed_url;
 }
 
-async function connectEleven(agentId) {
+async function connectEleven(agentId, ctx) {
     const signedUrl = await getElevenSignedUrl(agentId);
     const elWs = new WebSocket(signedUrl);
 
@@ -192,6 +192,12 @@ async function connectEleven(agentId) {
                         // prompt: "Speak in natural, clear Hindi. Pronounce words correctly. Avoid mixing English unless the user speaks English."
                     }
                 },
+
+                // ✅ THIS is the main thing you want
+                dynamic_variables: {
+                    customer_name: ctx?.customerName || "",
+                    due_amount: String(ctx?.dueAmount || ""),
+                }
 
                 // conversation_initiation_client_data: {
                 //     conversation_config_override: {
@@ -280,7 +286,7 @@ wss.on("connection", async (exoWs, req) => {
         });
     }
 
-    exoWs.on("message", (buf) => {
+    exoWs.on("message", async (buf) => {
         let msg;
         try {
             msg = JSON.parse(buf.toString());
@@ -300,6 +306,22 @@ wss.on("connection", async (exoWs, req) => {
                 msg?.callSid ||
                 msg?.call_id ||
                 callSid;
+
+            // ✅ Get ctx
+            const ctx = callCtx.get(callSid);
+            if (ctx) {
+                console.log("✅ CTX FOUND:", ctx);
+            } else {
+                console.log("⚠️ CTX NOT FOUND for:", callSid);
+            }
+
+            // ✅ connect Eleven AFTER ctx is available
+            try {
+                elWs = await connectEleven(agentId, ctx);  // 👈 pass ctx
+            } catch (e) {
+                console.log("❌ Eleven connect failed:", e.message);
+            }
+
 
             fs.appendFileSync(fileForCall(callSid, "events.jsonl"), logLine);
             console.log("📞 START:", callSid);
